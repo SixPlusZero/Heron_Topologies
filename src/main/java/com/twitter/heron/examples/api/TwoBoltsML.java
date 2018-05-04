@@ -47,8 +47,8 @@ import com.twitter.heron.common.basics.ByteAmount;
  * 4. Bolts maintain an in-memory map, which is keyed by the word emitted by the spouts,
  * and updates the count when it receives a tuple.
  */
-public final class TwoBolts {
-    private TwoBolts() {
+public final class TwoBoltsML {
+    private TwoBoltsML() {
     }
 
     // Utils class to generate random String at given length
@@ -216,9 +216,11 @@ public final class TwoBolts {
         private long nItems;
         private long startTime;
         private boolean emit;
+        private boolean work;
 
-        public ExclamationBolt(boolean emit) {
+        public ExclamationBolt(boolean emit, boolean work) {
             this.emit = emit;
+            this.work = work;
         }
 
         @Override
@@ -246,61 +248,21 @@ public final class TwoBolts {
                 //GlobalMetrics.incr("selected_items");
             }
             if (emit) {
-                collector.emit(tuple, new Values(tuple.getString(0) + "!!!"));
-            }
-            collector.ack(tuple);
-        }
-
-        @Override
-        public void declareOutputFields(OutputFieldsDeclarer declarer) {
-            if (emit) {
-                declarer.declare(new Fields("word"));
-            }
-        }
-    }
-
-
-    public static class CountABolt extends BaseRichBolt {
-        private static final long serialVersionUID = -3226618846531432832L;
-        private OutputCollector collector;
-        private long nItems;
-        private long startTime;
-        private boolean emit;
-
-        public CountABolt(boolean emit) {
-            this.emit = emit;
-        }
-
-        @Override
-        @SuppressWarnings("rawtypes")
-        public void prepare(
-                Map conf,
-                TopologyContext context,
-                OutputCollector acollector) {
-            collector = acollector;
-            nItems = 0;
-            startTime = System.currentTimeMillis();
-        }
-
-        @Override
-        public void execute(Tuple tuple) {
-            // We need to ack a tuple when we consider it is done successfully
-            // Or we could fail it by invoking collector.fail(tuple)
-            // If we do not do the ack or fail explicitly
-            // After the MessageTimeout Seconds, which could be set in Config,
-            // the spout will fail this tuple
-            ++nItems;
-            if (nItems % 10000 == 0) {
-                long latency = System.currentTimeMillis() - startTime;
-                System.out.println("Bolt processed " + nItems + " tuples in " + latency + " ms");
-                //GlobalMetrics.incr("selected_items");
-            }
-            if (emit) {
-                int count = 0;
-                for (int i = 0; i < tuple.getString(0).length(); i++) {
-                    if (tuple.getString(0).charAt(i) == 'a') count++;
+                long count = 0;
+                StringBuilder sb = new StringBuilder();
+                if (work) {
+                    for (int i = 0; i < tuple.getString(0).length(); i++) {
+                        for (int j = 0; j < tuple.getString(0).length(); j++)
+                            if (tuple.getString(0).charAt(i) == '!')
+                                count++;
+                    }
                 }
-                collector.emit(tuple, new Values(tuple.getString(0) + Integer.toString(count)));
+                for (int i = 0; i < tuple.getString(0).length(); i++) {
+                    if (tuple.getString(0).charAt(i) == '!')
+                        count++;
+                }
+                sb.append(count + "!");
+                collector.emit(tuple, new Values(tuple.getString(0) + sb.toString()));
             }
             collector.ack(tuple);
         }
@@ -321,29 +283,28 @@ public final class TwoBolts {
         if (args.length < 1) {
             throw new RuntimeException("Specify topology name");
         }
-
-        int parallelism = 2;
+        int parallelism = 1;
         if (args.length > 1) {
             parallelism = Integer.parseInt(args[1]);
         }
         TopologyBuilder builder = new TopologyBuilder();
         builder.setSpout("word", new WordSpout(), 1);
         //builder.setSpout("pressure", new PressureSpout(), parallelism - 1);
-        builder.setBolt("exclaim", new CountABolt(true), 4)
+        builder.setBolt("exclaim", new ExclamationBolt(true, false), 2)
                 .shuffleGrouping("word");
-                //.shuffleGrouping("pressure");
-        builder.setBolt("exclaim2", new ExclamationBolt(true), 2)
+        //.shuffleGrouping("pressure");
+        builder.setBolt("exclaim2", new ExclamationBolt(true, true), 1)
                 .shuffleGrouping("exclaim");
-        builder.setBolt("exclaim3", new ExclamationBolt(false), 2)
+        builder.setBolt("exclaim3", new ExclamationBolt(false, false), 1)
                 .shuffleGrouping("exclaim2");
 
         //builder.setBolt("consumer", new ConsumerBolt(), parallelism - 1)
-                //.shuffleGrouping("exclaim");
+        //.shuffleGrouping("exclaim");
 
         //.fieldsGrouping("pressure", new Fields("word"));
 
         Config conf = new Config();
-        conf.setNumStmgrs(2);
+        conf.setNumStmgrs(1);
 
         // configure component resources
         conf.setComponentRam("word",
@@ -362,10 +323,10 @@ public final class TwoBolts {
 
         // configure container resources
         conf.setContainerDiskRequested(
-                ExampleResources.getContainerDisk(8 * parallelism, parallelism));
+                ExampleResources.getContainerDisk(16, 2));
         conf.setContainerRamRequested(
-                ExampleResources.getContainerRam(8 * parallelism, parallelism));
-        conf.setContainerCpuRequested(3);
+                ExampleResources.getContainerRam(16, 2));
+        conf.setContainerCpuRequested(8);
 
         HeronSubmitter.submitTopology(args[0], conf, builder.createTopology());
     }
